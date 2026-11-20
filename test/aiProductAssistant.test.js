@@ -390,7 +390,7 @@ test("product details use the same public allowlist and reject invalid IDs", asy
   assert.equal(await getPublicProductDetails("not-an-object-id"), null);
 });
 
-test("Groq receives no prior chat transcript and unsafe generated content falls back to catalog facts", async () => {
+test("Groq receives redacted chat context and unsafe generated content falls back to catalog facts", async () => {
   const completionPrototype = Object.getPrototypeOf(new Groq({ apiKey: "audit-dummy" }).chat.completions);
   const originalCreate = completionPrototype.create;
   const originalApiKey = process.env.GROQ_API_KEY;
@@ -406,7 +406,10 @@ test("Groq receives no prior chat transcript and unsafe generated content falls 
   try {
     const response = await invokeChat({
       message: "Tell me about Pixel Phone. My colleague John Smith lives at 12 Main Street, Dhaka.",
-      history: [{ role: "user", content: "My friend Jane Doe stays at 44 Oak Road, Chittagong." }],
+      history: [
+        { role: "user", content: "My friend Jane Doe stays at 44 Oak Road, Chittagong." },
+        { role: "assistant", content: "That sounds like a long trip. How can I help?" },
+      ],
     });
 
     assert.equal(response.statusCode, 200);
@@ -414,6 +417,8 @@ test("Groq receives no prior chat transcript and unsafe generated content falls 
     const serializedMessages = JSON.stringify(capturedMessages);
     assert.equal(serializedMessages.includes("John Smith") || serializedMessages.includes("12 Main Street"), false);
     assert.equal(serializedMessages.includes("Jane Doe") || serializedMessages.includes("44 Oak Road"), false);
+    assert.match(serializedMessages, /That sounds like a long trip/);
+    assert.match(serializedMessages, /personal details removed/);
     assert.equal(JSON.stringify(capturedMessages).includes("seller@example.com"), false);
     assert.equal(JSON.stringify(capturedMessages).includes("Ignore previous instructions"), false);
     assert.doesNotMatch(response.body.reply, /seller revenue|10,000/i);
