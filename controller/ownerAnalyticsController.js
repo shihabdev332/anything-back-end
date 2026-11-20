@@ -19,6 +19,17 @@ const parseMonth = (value, now) => {
 };
 
 const monthString = (date) => date.toISOString().slice(0, 7);
+const calculateStoredLineValue = (unitPrice, quantity) => ({
+  $multiply: [
+    {
+      $divide: [
+        { $floor: { $add: [{ $multiply: [{ $cond: [{ $isNumber: unitPrice }, unitPrice, 0] }, 100] }, 0.5] } },
+        100,
+      ],
+    },
+    { $ifNull: [quantity, 0] },
+  ],
+});
 
 const makeOrderAnalyticsPipeline = ({ now, rangeStart, rangeEnd, previousStart, selectedMonth, reportEnd }) => {
   const nextMonth = new Date(Date.UTC(selectedMonth.getUTCFullYear(), selectedMonth.getUTCMonth() + 1, 1));
@@ -35,12 +46,7 @@ const makeOrderAnalyticsPipeline = ({ now, rangeStart, rangeEnd, previousStart, 
     ],
   };
   const bucketFormat = rangeEnd.getTime() - rangeStart.getTime() <= 31 * 24 * 60 * 60 * 1000 ? "%Y-%m-%d" : "%Y-%m";
-  const salesExpression = {
-    $round: [{ $multiply: [
-      { $cond: [{ $isNumber: "$activeLines.unitPrice" }, "$activeLines.unitPrice", 0] },
-      { $ifNull: ["$activeLines.quantity", 0] },
-    ] }, 2],
-  };
+  const salesExpression = calculateStoredLineValue("$activeLines.unitPrice", "$activeLines.quantity");
   const productPerformanceStages = [
     { $match: { createdAt: { $gte: previousStart, $lt: rangeEnd }, status: { $ne: "Cancelled" } } },
     { $unwind: "$activeLines" },
@@ -118,12 +124,7 @@ const makeOrderAnalyticsPipeline = ({ now, rangeStart, rangeEnd, previousStart, 
             $map: {
               input: "$activeLines",
               as: "line",
-              in: { $round: [{
-                $multiply: [
-                  { $cond: [{ $isNumber: "$$line.unitPrice" }, "$$line.unitPrice", 0] },
-                  { $ifNull: ["$$line.quantity", 0] },
-                ],
-              }, 2] },
+              in: calculateStoredLineValue("$$line.unitPrice", "$$line.quantity"),
             },
           },
         },
@@ -166,7 +167,8 @@ const makeOrderAnalyticsPipeline = ({ now, rangeStart, rangeEnd, previousStart, 
               totalOrderValue: {
                 $sum: { $cond: [{ $ne: ["$status", "Cancelled"] }, "$lineValue", 0] },
               },
-              billableOrders: { $sum: { $cond: [{ $and: [{ $ne: ["$status", "Cancelled"] }, { $gt: ["$pricedItemCount", 0] }] }, 1, 0] } },
+              billableOrderValue: { $sum: { $cond: [{ $and: [{ $ne: ["$status", "Cancelled"] }, { $gt: ["$pricedItemCount", 0] }, { $eq: ["$pricedItemCount", "$itemCount"] }] }, "$lineValue", 0] } },
+              billableOrders: { $sum: { $cond: [{ $and: [{ $ne: ["$status", "Cancelled"] }, { $gt: ["$pricedItemCount", 0] }, { $eq: ["$pricedItemCount", "$itemCount"] }] }, 1, 0] } },
             },
           },
         ],
@@ -181,52 +183,34 @@ const makeOrderAnalyticsPipeline = ({ now, rangeStart, rangeEnd, previousStart, 
               orderValue: {
                 $sum: { $cond: [{ $ne: ["$status", "Cancelled"] }, "$lineValue", 0] },
               },
-              billableOrders: { $sum: { $cond: [{ $and: [{ $ne: ["$status", "Cancelled"] }, { $gt: ["$pricedItemCount", 0] }] }, 1, 0] } },
+              billableOrderValue: { $sum: { $cond: [{ $and: [{ $ne: ["$status", "Cancelled"] }, { $gt: ["$pricedItemCount", 0] }, { $eq: ["$pricedItemCount", "$itemCount"] }] }, "$lineValue", 0] } },
+              billableOrders: { $sum: { $cond: [{ $and: [{ $ne: ["$status", "Cancelled"] }, { $gt: ["$pricedItemCount", 0] }, { $eq: ["$pricedItemCount", "$itemCount"] }] }, 1, 0] } },
             },
           },
         ],
         series: [
-          { $match: { createdAt: { $gte: rangeStart, $lt: rangeEnd }, status: { $ne: "Cancelled" } } },
-          { $unwind: "$activeLines" },
-          { $match: { "activeLines.unitPrice": { $type: "number" } } },
+          { $match: { createdAt: { $gte: rangeStart, $lt: rangeEnd } } },
           {
             $group: {
-              _id: {
-                orderId: "$_id",
-                bucket: { $dateToString: { format: bucketFormat, date: "$createdAt", timezone: "UTC" } },
+              _id: { $dateToString: { format: bucketFormat, date: "$createdAt", timezone: "UTC" } },
+              orderValue: {
+                $sum: { $cond: [{ $ne: ["$status", "Cancelled"] }, "$lineValue", 0] },
               },
-              orderValue: { $sum: salesExpression },
-              items: { $sum: { $ifNull: ["$activeLines.quantity", 0] } },
-            },
-          },
-          {
-            $group: {
-              _id: "$_id.bucket",
-              orderValue: { $sum: "$orderValue" },
               orders: { $sum: 1 },
-              items: { $sum: "$items" },
+              items: {
+                $sum: { $cond: [{ $ne: ["$status", "Cancelled"] }, "$itemCount", 0] },
+              },
             },
           },
           { $sort: { _id: 1 } },
           { $project: { _id: 0, bucket: "$_id", orderValue: 1, orders: 1, items: 1 } },
         ],
         monthlyHistory: [
-          { $match: { createdAt: { $gte: historyStart, $lt: reportEnd }, status: { $ne: "Cancelled" } } },
-          { $unwind: "$activeLines" },
-          { $match: { "activeLines.unitPrice": { $type: "number" } } },
+          { $match: { createdAt: { $gte: historyStart, $lt: reportEnd } } },
           {
             $group: {
-              _id: {
-                orderId: "$_id",
-                month: { $dateToString: { format: "%Y-%m", date: "$createdAt", timezone: "UTC" } },
-              },
-              orderValue: { $sum: salesExpression },
-            },
-          },
-          {
-            $group: {
-              _id: "$_id.month",
-              orderValue: { $sum: "$orderValue" },
+              _id: { $dateToString: { format: "%Y-%m", date: "$createdAt", timezone: "UTC" } },
+              orderValue: { $sum: { $cond: [{ $ne: ["$status", "Cancelled"] }, "$lineValue", 0] } },
               orders: { $sum: 1 },
             },
           },
@@ -273,7 +257,6 @@ const makeOrderAnalyticsPipeline = ({ now, rangeStart, rangeEnd, previousStart, 
           },
           { $project: { _id: 0, category: "$_id", currentSales: 1, previousSales: 1 } },
           { $sort: { currentSales: -1, previousSales: -1 } },
-          { $limit: 12 },
         ],
         reportProducts: [
           { $match: { ...reportDateMatch, status: { $ne: "Cancelled" } } },
@@ -342,11 +325,12 @@ const makeOrderAnalyticsPipeline = ({ now, rangeStart, rangeEnd, previousStart, 
               orderValue: {
                 $sum: { $cond: [{ $ne: ["$status", "Cancelled"] }, "$lineValue", 0] },
               },
-              billableOrders: { $sum: { $cond: [{ $and: [{ $ne: ["$status", "Cancelled"] }, { $gt: ["$pricedItemCount", 0] }] }, 1, 0] } },
+              billableOrderValue: { $sum: { $cond: [{ $and: [{ $ne: ["$status", "Cancelled"] }, { $gt: ["$pricedItemCount", 0] }, { $eq: ["$pricedItemCount", "$itemCount"] }] }, "$lineValue", 0] } },
+              billableOrders: { $sum: { $cond: [{ $and: [{ $ne: ["$status", "Cancelled"] }, { $gt: ["$pricedItemCount", 0] }, { $eq: ["$pricedItemCount", "$itemCount"] }] }, 1, 0] } },
             },
           },
           { $sort: { _id: 1 } },
-          { $project: { _id: 0, month: "$_id", orders: 1, cancelledOrders: 1, completedOrders: 1, orderValue: 1, billableOrders: 1 } },
+          { $project: { _id: 0, month: "$_id", orders: 1, cancelledOrders: 1, completedOrders: 1, orderValue: 1, billableOrderValue: 1, billableOrders: 1 } },
         ],
         currentMonthComparison: [
           { $match: { createdAt: { $gte: new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth() - 1, 1)), $lt: now } } },
@@ -357,11 +341,12 @@ const makeOrderAnalyticsPipeline = ({ now, rangeStart, rangeEnd, previousStart, 
               cancelledOrders: { $sum: { $cond: [{ $eq: ["$status", "Cancelled"] }, 1, 0] } },
               completedOrders: { $sum: { $cond: [{ $eq: ["$status", "Delivered"] }, 1, 0] } },
               orderValue: { $sum: { $cond: [{ $ne: ["$status", "Cancelled"] }, "$lineValue", 0] } },
-              billableOrders: { $sum: { $cond: [{ $and: [{ $ne: ["$status", "Cancelled"] }, { $gt: ["$pricedItemCount", 0] }] }, 1, 0] } },
+              billableOrderValue: { $sum: { $cond: [{ $and: [{ $ne: ["$status", "Cancelled"] }, { $gt: ["$pricedItemCount", 0] }, { $eq: ["$pricedItemCount", "$itemCount"] }] }, "$lineValue", 0] } },
+              billableOrders: { $sum: { $cond: [{ $and: [{ $ne: ["$status", "Cancelled"] }, { $gt: ["$pricedItemCount", 0] }, { $eq: ["$pricedItemCount", "$itemCount"] }] }, 1, 0] } },
             },
           },
           { $sort: { _id: 1 } },
-          { $project: { _id: 0, month: "$_id", orders: 1, cancelledOrders: 1, completedOrders: 1, orderValue: 1, billableOrders: 1 } },
+          { $project: { _id: 0, month: "$_id", orders: 1, cancelledOrders: 1, completedOrders: 1, orderValue: 1, billableOrderValue: 1, billableOrders: 1 } },
         ],
         statusDistribution: [
           { $group: { _id: { $ifNull: ["$status", "Unknown"] }, orders: { $sum: 1 } } },
@@ -380,7 +365,7 @@ const makeOrderAnalyticsPipeline = ({ now, rangeStart, rangeEnd, previousStart, 
           { $limit: 5 },
         ],
         categoryPerformance: [
-          { $match: { createdAt: { $gte: previousStart, $lt: now }, status: { $ne: "Cancelled" } } },
+          { $match: { createdAt: { $gte: previousStart, $lt: rangeEnd }, status: { $ne: "Cancelled" } } },
           { $unwind: "$activeLines" },
           { $match: { "activeLines.unitPrice": { $type: "number" } } },
           {
@@ -424,7 +409,6 @@ const makeOrderAnalyticsPipeline = ({ now, rangeStart, rangeEnd, previousStart, 
           },
           { $project: { _id: 0, category: "$_id", currentSales: 1, previousSales: 1, units: 1, orders: 1 } },
           { $sort: { currentSales: -1 } },
-          { $limit: 8 },
         ],
         topCustomers: [
           { $match: { status: { $ne: "Cancelled" }, pricedItemCount: { $gt: 0 } } },
@@ -563,7 +547,7 @@ const makeOrderAnalyticsPipeline = ({ now, rangeStart, rangeEnd, previousStart, 
         unpricedOrderLines: [
           { $match: { status: { $ne: "Cancelled" } } },
           { $unwind: "$activeLines" },
-          { $match: { $or: [{ "activeLines.unitPrice": { $exists: false } }, { "activeLines.unitPrice": null }] } },
+          { $match: { $expr: { $eq: [{ $isNumber: "$activeLines.unitPrice" }, false] } } },
           { $count: "count" },
         ],
       },
@@ -599,16 +583,13 @@ export const getOwnerAnalytics = async (req, res) => {
       if (rangeEnd.getTime() - rangeStart.getTime() > 366 * 24 * 60 * 60 * 1000) {
         return res.status(400).json({ success: false, message: "Custom range cannot exceed 366 days" });
       }
-      previousStart = new Date(rangeStart.getTime() - (rangeEnd.getTime() - rangeStart.getTime()));
     } else {
       const rangeMonths = range === "6m" ? 6 : range === "12m" ? 12 : 0;
       rangeStart = rangeMonths
         ? new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth() - rangeMonths + 1, 1))
         : new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate() - RANGE_DAYS[range] + 1));
-      previousStart = rangeMonths
-        ? new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth() - rangeMonths * 2 + 1, 1))
-        : new Date(rangeStart.getTime() - RANGE_DAYS[range] * 24 * 60 * 60 * 1000);
     }
+    previousStart = new Date(rangeStart.getTime() - (rangeEnd.getTime() - rangeStart.getTime()));
     const selectedMonth = parseMonth(req.query.month, now);
     if (!selectedMonth) {
       return res.status(400).json({ success: false, message: "Invalid report month" });
@@ -712,13 +693,28 @@ export const getOwnerAnalytics = async (req, res) => {
     const previousMonthKey = monthString(previousMonthStart);
     const reportMonthKey = monthString(selectedMonth);
     const reportPreviousMonthKey = monthString(new Date(Date.UTC(selectedMonth.getUTCFullYear(), selectedMonth.getUTCMonth() - 1, 1)));
-    const reportMonth = monthly[reportMonthKey] || { orders: 0, cancelledOrders: 0, completedOrders: 0, orderValue: 0, billableOrders: 0 };
-    const reportPreviousMonth = monthly[reportPreviousMonthKey] || { orders: 0, cancelledOrders: 0, completedOrders: 0, orderValue: 0, billableOrders: 0 };
-    const currentMonth = calendarMonthly[currentMonthKey] || { orders: 0, cancelledOrders: 0, completedOrders: 0, orderValue: 0, billableOrders: 0 };
-    const previousMonth = calendarMonthly[previousMonthKey] || { orders: 0, cancelledOrders: 0, completedOrders: 0, orderValue: 0, billableOrders: 0 };
+    const reportMonth = monthly[reportMonthKey] || { orders: 0, cancelledOrders: 0, completedOrders: 0, orderValue: 0, billableOrderValue: 0, billableOrders: 0 };
+    const reportPreviousMonth = monthly[reportPreviousMonthKey] || { orders: 0, cancelledOrders: 0, completedOrders: 0, orderValue: 0, billableOrderValue: 0, billableOrders: 0 };
+    const currentMonth = calendarMonthly[currentMonthKey] || { orders: 0, cancelledOrders: 0, completedOrders: 0, orderValue: 0, billableOrderValue: 0, billableOrders: 0 };
+    const previousMonth = calendarMonthly[previousMonthKey] || { orders: 0, cancelledOrders: 0, completedOrders: 0, orderValue: 0, billableOrderValue: 0, billableOrders: 0 };
     const users = userResults[0] || {};
     const signupCoverage = users.signupCoverage?.[0] || { tracked: 0, missing: 0 };
     const products = productResults[0] || {};
+    const historyMonths = [];
+    for (const date = new Date(historyStart); date < reportEnd; date.setUTCMonth(date.getUTCMonth() + 1)) {
+      historyMonths.push(monthString(date));
+    }
+    const monthlyHistoryByMonth = new Map((orderData.monthlyHistory || []).map((item) => [item.month, item]));
+    const customerHistoryByMonth = new Map((users.acquisitionHistory || []).map((item) => [item.month, item]));
+    const monthlyHistory = historyMonths.map((month) => ({
+      month,
+      orderValue: monthlyHistoryByMonth.get(month)?.orderValue || 0,
+      orders: monthlyHistoryByMonth.get(month)?.orders || 0,
+    }));
+    const customerHistory = historyMonths.map((month) => ({
+      month,
+      customers: customerHistoryByMonth.get(month)?.customers || 0,
+    }));
 
     return res.json({
       success: true,
@@ -732,14 +728,14 @@ export const getOwnerAnalytics = async (req, res) => {
           completedOrders: totals.completedOrders || 0,
           openOrders: totals.openOrders || 0,
           totalOrderValue: totals.totalOrderValue || 0,
-          averageOrderValue: totals.billableOrders ? totals.totalOrderValue / totals.billableOrders : 0,
+          averageOrderValue: totals.billableOrders ? totals.billableOrderValue / totals.billableOrders : 0,
           currentOrderValue: periods.current?.orderValue || 0,
           previousOrderValue: periods.previous?.orderValue || 0,
           currentAverageOrderValue: periods.current?.billableOrders
-            ? periods.current.orderValue / periods.current.billableOrders
+            ? periods.current.billableOrderValue / periods.current.billableOrders
             : 0,
           previousAverageOrderValue: periods.previous?.billableOrders
-            ? periods.previous.orderValue / periods.previous.billableOrders
+            ? periods.previous.billableOrderValue / periods.previous.billableOrders
             : 0,
           currentOrders: periods.current?.orders || 0,
           previousOrders: periods.previous?.orders || 0,
@@ -760,8 +756,8 @@ export const getOwnerAnalytics = async (req, res) => {
           previousMonthOrderValue: previousMonth.orderValue,
           currentMonthOrders: currentMonth.orders,
           previousMonthOrders: previousMonth.orders,
-          currentMonthAverageOrderValue: currentMonth.billableOrders ? currentMonth.orderValue / currentMonth.billableOrders : 0,
-          previousMonthAverageOrderValue: previousMonth.billableOrders ? previousMonth.orderValue / previousMonth.billableOrders : 0,
+          currentMonthAverageOrderValue: currentMonth.billableOrders ? currentMonth.billableOrderValue / currentMonth.billableOrders : 0,
+          previousMonthAverageOrderValue: previousMonth.billableOrders ? previousMonth.billableOrderValue / previousMonth.billableOrders : 0,
           currentMonthCancellations: currentMonth.cancelledOrders,
           previousMonthCancellations: previousMonth.cancelledOrders,
           repeatPurchaseRate: orderData.repeatPurchase?.[0]?.buyers
@@ -778,14 +774,14 @@ export const getOwnerAnalytics = async (req, res) => {
           previousOrders: reportPreviousMonth.orders,
           completedOrders: reportMonth.completedOrders,
           cancelledOrders: reportMonth.cancelledOrders,
-          averageOrderValue: reportMonth.billableOrders ? reportMonth.orderValue / reportMonth.billableOrders : 0,
-          previousAverageOrderValue: reportPreviousMonth.billableOrders ? reportPreviousMonth.orderValue / reportPreviousMonth.billableOrders : 0,
+          averageOrderValue: reportMonth.billableOrders ? reportMonth.billableOrderValue / reportMonth.billableOrders : 0,
+          previousAverageOrderValue: reportPreviousMonth.billableOrders ? reportPreviousMonth.billableOrderValue / reportPreviousMonth.billableOrders : 0,
           categories: orderData.reportCategories || [],
           products: orderData.reportProducts || [],
         },
         series: orderData.series || [],
-        monthlyHistory: orderData.monthlyHistory || [],
-        customerHistory: users.acquisitionHistory || [],
+        monthlyHistory,
+        customerHistory,
         customerSignupsThisMonth: users.currentMonthSignups?.[0]?.count || 0,
         statuses: orderData.statusDistribution || [],
         topProducts: orderData.topProducts || [],
