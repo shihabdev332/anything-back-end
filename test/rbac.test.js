@@ -20,7 +20,7 @@ import ownerRoutes from "../routes/ownerRoutes.js";
 import { getSellerOrders, getUserOrders } from "../controller/orderController.js";
 import { updateProduct } from "../controller/productController.js";
 import { getAssignedDeliveries, updateDeliveryStatus } from "../controller/deliveryController.js";
-import { adminLogin, userRegister } from "../controller/userController.js";
+import { adminLogin, userLogin, userRegister } from "../controller/userController.js";
 
 const secret = "rbac-tests-only-secret-with-sufficient-entropy";
 const ids = {
@@ -199,8 +199,17 @@ test("seller login rejects owners and delivery accounts even when legacy flags c
   };
 
   try {
-    const sellerLogin = await login("seller@example.test");
+    const sellerLogin = await login("  SELLER@EXAMPLE.TEST  ");
     assert.equal(sellerLogin.statusCode, 200, sellerLogin.body?.message);
+    const storefrontLogin = {
+      statusCode: 200,
+      body: null,
+      status(code) { this.statusCode = code; return this; },
+      json(body) { this.body = body; return this; },
+    };
+    await userLogin({ body: { email: " SELLER@EXAMPLE.TEST ", password: "test-password" } }, storefrontLogin);
+    assert.equal(storefrontLogin.body.success, true);
+    assert.equal(storefrontLogin.body.user.isAdmin, true);
     assert.equal((await login("owner@example.test")).statusCode, 401);
     assert.equal((await login("delivery@example.test")).statusCode, 401);
     assert.equal((await login("malformed-role@example.test")).statusCode, 401);

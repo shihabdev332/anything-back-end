@@ -4,6 +4,13 @@ import validator from "validator";
 import jwt from "jsonwebtoken";
 import { v2 as cloudinary } from "cloudinary";
 
+const findUserByEmail = (email) => {
+  const normalizedEmail = typeof email === "string" ? email.trim() : "";
+  if (!normalizedEmail) return userModel.findOne({ email: normalizedEmail });
+  const escapedEmail = normalizedEmail.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  return userModel.findOne({ email: new RegExp(`^${escapedEmail}$`, "i") });
+};
+
 // Function to create a JWT token with longer expiration
 const createToken = (user) => {
   return jwt.sign(
@@ -21,14 +28,14 @@ const createToken = (user) => {
 // ✅ User Login
 const userLogin = async (req, res) => {
   try {
-    const { email, password } = req.body;
+    const { email, password } = req.body || {};
     
     // Validation for required fields
     if (!email || !password) {
       return res.json({ success: false, message: "Email and Password are required" });
     }
 
-    const user = await userModel.findOne({ email });
+    const user = await findUserByEmail(email);
     if (!user) {
       return res.json({ success: false, message: "User doesn't exist!" });
     }
@@ -113,13 +120,13 @@ const userRegister = async (req, res) => {
 // ✅ Admin Login
 const adminLogin = async (req, res) => {
   try {
-    const { email, password } = req.body;
+    const { email, password } = req.body || {};
 
     if (!email || !password) {
       return res.status(400).json({ success: false, message: "Email and Password are required" });
     }
 
-    const user = await userModel.findOne({ email });
+    const user = await findUserByEmail(email);
 
     // Seller accounts use the existing isAdmin database flag.
     if (!user || user.isAdmin !== true || user.isOwner === true || user.isDeliveryMan === true) {
