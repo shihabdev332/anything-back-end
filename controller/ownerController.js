@@ -36,6 +36,7 @@ export const getOwnerDashboardSummary = async (req, res) => {
                     $and: [
                       { $ne: [{ $ifNull: ["$isAdmin", false] }, true] },
                       { $ne: [{ $ifNull: ["$isOwner", false] }, true] },
+                      { $ne: [{ $ifNull: ["$isDeliveryMan", false] }, true] },
                     ],
                   },
                   1,
@@ -262,7 +263,7 @@ export const getOwnerCustomers = async (req, res) => {
     }
     const search = searchValue.trim();
 
-    const filter = { isAdmin: { $ne: true }, isOwner: { $ne: true } };
+    const filter = { isAdmin: { $ne: true }, isOwner: { $ne: true }, isDeliveryMan: { $ne: true } };
     if (search) {
       const safeSearch = new RegExp(escapeRegex(search), "i");
       filter.$or = [{ name: safeSearch }, { email: safeSearch }];

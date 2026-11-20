@@ -24,6 +24,16 @@ const makeOrderAnalyticsPipeline = ({ now, rangeStart, rangeEnd, previousStart, 
   const nextMonth = new Date(Date.UTC(selectedMonth.getUTCFullYear(), selectedMonth.getUTCMonth() + 1, 1));
   const previousMonthStart = new Date(Date.UTC(selectedMonth.getUTCFullYear(), selectedMonth.getUTCMonth() - 1, 1));
   const historyStart = new Date(Date.UTC(selectedMonth.getUTCFullYear(), selectedMonth.getUTCMonth() - 12, 1));
+  const currentMonthStart = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), 1));
+  const reportPreviousEnd = selectedMonth.getTime() === currentMonthStart.getTime()
+    ? new Date(previousMonthStart.getTime() + (reportEnd.getTime() - selectedMonth.getTime()))
+    : reportEnd;
+  const reportDateMatch = {
+    $or: [
+      { createdAt: { $gte: previousMonthStart, $lt: reportPreviousEnd } },
+      { createdAt: { $gte: selectedMonth, $lt: reportEnd } },
+    ],
+  };
   const bucketFormat = rangeEnd.getTime() - rangeStart.getTime() <= 31 * 24 * 60 * 60 * 1000 ? "%Y-%m-%d" : "%Y-%m";
   const salesExpression = {
     $round: [{ $multiply: [
@@ -224,7 +234,7 @@ const makeOrderAnalyticsPipeline = ({ now, rangeStart, rangeEnd, previousStart, 
           { $project: { _id: 0, month: "$_id", orderValue: 1, orders: 1 } },
         ],
         reportCategories: [
-          { $match: { createdAt: { $gte: previousMonthStart, $lt: reportEnd }, status: { $ne: "Cancelled" } } },
+          { $match: { ...reportDateMatch, status: { $ne: "Cancelled" } } },
           { $unwind: "$activeLines" },
           { $match: { "activeLines.unitPrice": { $type: "number" } } },
           {
@@ -266,7 +276,7 @@ const makeOrderAnalyticsPipeline = ({ now, rangeStart, rangeEnd, previousStart, 
           { $limit: 12 },
         ],
         reportProducts: [
-          { $match: { createdAt: { $gte: previousMonthStart, $lt: reportEnd }, status: { $ne: "Cancelled" } } },
+          { $match: { ...reportDateMatch, status: { $ne: "Cancelled" } } },
           { $unwind: "$activeLines" },
           { $match: { "activeLines.unitPrice": { $type: "number" } } },
           {
@@ -321,9 +331,7 @@ const makeOrderAnalyticsPipeline = ({ now, rangeStart, rangeEnd, previousStart, 
         ],
         monthComparison: [
           {
-            $match: {
-              createdAt: { $gte: previousMonthStart, $lt: reportEnd },
-            },
+            $match: reportDateMatch,
           },
           {
             $group: {
@@ -622,7 +630,7 @@ export const getOwnerAnalytics = async (req, res) => {
         {
           $facet: {
             totals: [
-              { $match: { isAdmin: { $ne: true }, isOwner: { $ne: true } } },
+              { $match: { isAdmin: { $ne: true }, isOwner: { $ne: true }, isDeliveryMan: { $ne: true } } },
               { $count: "customers" },
             ],
             sellers: [
@@ -630,7 +638,7 @@ export const getOwnerAnalytics = async (req, res) => {
               { $count: "count" },
             ],
             signupCoverage: [
-              { $match: { isAdmin: { $ne: true }, isOwner: { $ne: true } } },
+              { $match: { isAdmin: { $ne: true }, isOwner: { $ne: true }, isDeliveryMan: { $ne: true } } },
               {
                 $group: {
                   _id: null,
@@ -640,17 +648,17 @@ export const getOwnerAnalytics = async (req, res) => {
               },
             ],
             selectedMonth: [
-              { $match: { isAdmin: { $ne: true }, isOwner: { $ne: true } } },
+              { $match: { isAdmin: { $ne: true }, isOwner: { $ne: true }, isDeliveryMan: { $ne: true } } },
               { $match: { createdAt: { $gte: monthStart, $lt: monthEnd } } },
               { $count: "count" },
             ],
             currentMonthSignups: [
-              { $match: { isAdmin: { $ne: true }, isOwner: { $ne: true } } },
+              { $match: { isAdmin: { $ne: true }, isOwner: { $ne: true }, isDeliveryMan: { $ne: true } } },
               { $match: { createdAt: { $gte: currentMonthStart, $lt: currentMonthEnd } } },
               { $count: "count" },
             ],
             acquisitionHistory: [
-              { $match: { isAdmin: { $ne: true }, isOwner: { $ne: true } } },
+              { $match: { isAdmin: { $ne: true }, isOwner: { $ne: true }, isDeliveryMan: { $ne: true } } },
               { $match: { createdAt: { $gte: historyStart, $lt: reportEnd } } },
               {
                 $group: {
@@ -662,7 +670,7 @@ export const getOwnerAnalytics = async (req, res) => {
               { $project: { _id: 0, month: "$_id", customers: 1 } },
             ],
             recent: [
-              { $match: { isAdmin: { $ne: true }, isOwner: { $ne: true } } },
+              { $match: { isAdmin: { $ne: true }, isOwner: { $ne: true }, isDeliveryMan: { $ne: true } } },
               { $match: { createdAt: { $gte: new Date(now.getTime() - 30 * 24 * 60 * 60 * 1000) } } },
               { $sort: { createdAt: -1, _id: -1 } },
               { $limit: 6 },

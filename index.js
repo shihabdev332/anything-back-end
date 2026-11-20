@@ -53,11 +53,13 @@ const healthCheck = async (req, res) => {
 };
 
 // Middlewares
-// English Comment: Configure CORS to allow requests from any origin (helpful for Vercel)
+// Reflect the requesting origin so credentialed browser requests do not receive
+// the invalid combination of Access-Control-Allow-Origin: * and credentials.
 app.use(cors({
-  origin: "*",
-  methods: ["GET", "POST", "PUT", "PATCH", "DELETE"],
-  credentials: true
+  origin: true,
+  methods: ["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
+  allowedHeaders: ["Content-Type", "Authorization"],
+  credentials: true,
 }));
 
 // Body Parsers with increased limits
